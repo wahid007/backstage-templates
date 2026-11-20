@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ${{ values.componentId }}
+  description: ${{ values.description }}
+  tags:
+    - nextjs
+    - typescript
+    - docker
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+    backstage.io/techdocs-ref: dir:.
+  links:
+    - title: CI/CD Pipeline
+      url: https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ values.destination.repo }}/actions
+spec:
+  type: service
+  lifecycle: experimental
+  owner: ${{ values.owner }}

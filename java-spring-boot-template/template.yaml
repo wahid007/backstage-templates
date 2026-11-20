@@ -1,0 +1,101 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: java-spring-boot-template
+  title: Java Spring Boot Service with CI/CD and Docker
+  description: >-
+    Creates a Spring Boot 4 / Java 25 (Maven) repository with a GitHub Actions
+    pipeline that installs dependencies, builds and tests the application, builds
+    a Docker image and pushes it to the GitHub Container Registry (GHCR).
+  tags:
+    - java
+    - spring-boot
+    - maven
+    - ci-cd
+    - docker
+    - recommended
+spec:
+  owner: developers
+  type: service
+
+  # 1. Inputs collected from the user in the Backstage UI
+  parameters:
+    - title: Provide Component Information
+      required:
+        - name
+        - owner
+      properties:
+        name:
+          title: Name
+          type: string
+          description: Unique name of the service (e.g., my-spring-service)
+          ui:autofocus: true
+          ui:field: EntityNamePicker
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the component (e.g., group:developers)
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        description:
+          title: Description
+          type: string
+          description: Short description of the service
+          default: Spring Boot service created via Backstage
+
+    - title: Choose Repository Location
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+
+  # 2. Execution steps
+  steps:
+    # Step A: Render the skeleton (Nunjucks) and copy it to the workspace
+    - id: fetch-base
+      name: Fetch Spring Boot Boilerplate & Pipeline
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          componentId: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+
+    # Step B: Create the remote GitHub repository and push the files
+    - id: publish
+      name: Publish Repository to GitHub
+      action: publish:github
+      input:
+        allowedHosts: ['github.com']
+        repoUrl: ${{ parameters.repoUrl }}
+        description: ${{ parameters.description }}
+        access: private
+        defaultBranch: main
+
+    # Step C: Register the new component in the Backstage catalog
+    - id: register
+      name: Register to Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['publish'].output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+
+  output:
+    links:
+      - title: Repository
+        url: ${{ steps['publish'].output.remoteUrl }}
+      - title: CI/CD Pipeline (GitHub Actions)
+        url: ${{ steps['publish'].output.remoteUrl }}/actions
+      - title: Open in Catalog
+        icon: catalog
+        entityRef: ${{ steps['register'].output.entityRef }}

@@ -1,0 +1,13 @@
+target
+.mvn
+build
+out
+.idea
+*.iml
+.git
+.gitignore
+.github
+Dockerfile
+.dockerignore
+README.md
+catalog-info.yaml

@@ -1,0 +1,24 @@
+# Registers every software template in this repository with the Backstage catalog.
+#
+# Add this file as a Location in Backstage, e.g. via app-config.yaml:
+#
+#   catalog:
+#     locations:
+#       - type: url
+#         target: https://github.com/<org>/backstage-templates/blob/main/catalog-info.yaml
+#
+# ...or use the "Register Existing Component" button in the Catalog UI.
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: backstage-golden-path-templates
+  title: Golden Path Software Templates
+  description: All software templates (Next.js, Python FastAPI, Java Spring Boot)
+  tags:
+    - templates
+    - golden-path
+spec:
+  targets:
+    - ./nextjs-template/template.yaml
+    - ./fastapi-template/template.yaml
+    - ./java-spring-boot-template/template.yaml

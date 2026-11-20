@@ -1,0 +1,17 @@
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local pi harness state
+.pi/
+
+# Template render/build leftovers (skeleton-level .gitignore files cover the rest)
+node_modules/
+target/
+.venv/
+venv/
+__pycache__/
