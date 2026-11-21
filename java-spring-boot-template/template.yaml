@@ -76,10 +76,9 @@ spec:
       name: Publish Repository to GitHub
       action: publish:github
       input:
-        allowedHosts: ['github.com']
         repoUrl: ${{ parameters.repoUrl }}
         description: ${{ parameters.description }}
-        access: private
+        repoVisibility: private
         defaultBranch: main
 
     # Step C: Register the new component in the Backstage catalog
