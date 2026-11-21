@@ -1,0 +1,232 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: nextjs-argocd-template
+  title: Next.js App with CI/CD, Security Scans and Argo CD GitOps
+  description: >-
+    Creates a Next.js (TypeScript) service with a hardened CI/CD pipeline
+    (lint, tests, Snyk, OWASP Dependency-Check, Trivy, Checkov, GitGuardian and
+    Slack notifications), Kubernetes Deployment/Service manifests and an
+    automated Argo CD GitOps onboarding pull request against the app-of-apps
+    repository.
+  tags:
+    - nextjs
+    - typescript
+    - ci-cd
+    - docker
+    - kubernetes
+    - argocd
+    - gitops
+    - security
+spec:
+  owner: developers
+  type: service
+
+  # ---------------------------------------------------------------------------
+  # 1. Inputs collected from the user in the Backstage UI
+  # ---------------------------------------------------------------------------
+  parameters:
+    - title: Provide Component Information
+      required:
+        - name
+        - owner
+      properties:
+        name:
+          title: Name
+          type: string
+          description: >-
+            Unique lowercase DNS name of the Next.js service (e.g.,
+            my-nextjs-app). Used for the Kubernetes resources and the Argo CD
+            Application.
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          maxLength: 59
+          ui:autofocus: true
+          ui:field: EntityNamePicker
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the component (e.g., group:developers)
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        description:
+          title: Description
+          type: string
+          description: Short description of the service
+          default: Next.js application created via Backstage with Argo CD GitOps
+
+    - title: Kubernetes Settings
+      required:
+        - namespace
+        - replicas
+      properties:
+        namespace:
+          title: Kubernetes Namespace
+          type: string
+          description: Namespace the Deployment and Service are created in
+          default: default
+        replicas:
+          title: Replicas
+          type: integer
+          description: Number of pod replicas managed by the Deployment
+          default: 1
+          minimum: 1
+          maximum: 10
+        imagePullSecret:
+          title: Image Pull Secret (optional)
+          type: string
+          description: >-
+            Existing docker-registry secret in the target namespace used to pull
+            the private GHCR image. Leave empty when the package is public.
+          default: ''
+
+    - title: Choose Repository Location
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+
+    - title: Argo CD / GitOps
+      required:
+        - gitopsRepoUrl
+        - gitopsRepoBranch
+        - argocdNamespace
+        - argocdProject
+        - targetRevision
+      properties:
+        gitopsRepoUrl:
+          title: App-of-Apps Repository
+          type: string
+          description: >-
+            Existing gitops-infra repository that hosts the Argo CD app-of-apps.
+            Use the RepoUrlPicker format, e.g.
+            github.com?repo=gitops-infra&owner=wahid007
+          default: github.com?repo=gitops-infra&owner=wahid007
+        gitopsRepoBranch:
+          title: App-of-Apps Branch
+          type: string
+          description: Branch of the gitops-infra repository that Argo CD watches
+          default: main
+        argocdNamespace:
+          title: Argo CD Namespace
+          type: string
+          description: Namespace where the Argo CD Application resources live
+          default: argocd
+        argocdProject:
+          title: Argo CD Project
+          type: string
+          description: Argo CD AppProject used by the generated Application
+          default: default
+        targetRevision:
+          title: Application Repository Branch
+          type: string
+          description: Branch of the generated repository that Argo CD tracks
+          default: main
+
+  # ---------------------------------------------------------------------------
+  # 2. Execution steps
+  # ---------------------------------------------------------------------------
+  steps:
+    # Step A: Render the Next.js skeleton (Nunjucks) and copy it to the workspace
+    - id: fetch-base
+      name: Fetch Next.js Boilerplate, Pipeline and Kubernetes Manifests
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          componentId: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+          namespace: ${{ parameters.namespace }}
+          replicas: ${{ parameters.replicas }}
+          imagePullSecret: ${{ parameters.imagePullSecret }}
+          argocdNamespace: ${{ parameters.argocdNamespace }}
+          argocdProject: ${{ parameters.argocdProject }}
+          targetRevision: ${{ parameters.targetRevision }}
+
+    # Step B: Create the remote GitHub repository and push the app files
+    - id: publish
+      name: Publish Repository to GitHub
+      action: publish:github
+      input:
+        repoUrl: ${{ parameters.repoUrl }}
+        description: ${{ parameters.description }}
+        repoVisibility: private
+        defaultBranch: main
+
+    # Step C: Render the Argo CD Application fragment for the app-of-apps repo
+    # (after publish, so the fragment is not committed to the app repository)
+    - id: fetch-gitops
+      name: Render Argo CD App-of-Apps Manifest
+      action: fetch:template
+      input:
+        url: ./gitops-skeleton
+        targetPath: ./gitops
+        values:
+          componentId: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+          namespace: ${{ parameters.namespace }}
+          replicas: ${{ parameters.replicas }}
+          imagePullSecret: ${{ parameters.imagePullSecret }}
+          argocdNamespace: ${{ parameters.argocdNamespace }}
+          argocdProject: ${{ parameters.argocdProject }}
+          targetRevision: ${{ parameters.targetRevision }}
+
+    # Step D: Register the new component in the Backstage catalog
+    - id: register
+      name: Register to Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['publish'].output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+
+    # Step E: Open a pull request that registers the app with the Argo CD
+    # app-of-apps repository (apps/<component>.yaml)
+    - id: gitops-pr
+      name: Open Argo CD App-of-Apps Pull Request
+      action: publish:github:pull-request
+      input:
+        repoUrl: ${{ parameters.gitopsRepoUrl }}
+        branchName: backstage/argocd-${{ parameters.name }}
+        targetBranchName: ${{ parameters.gitopsRepoBranch }}
+        title: 'feat(argocd): onboard ${{ parameters.name }}'
+        description: |
+          Automated onboarding of `${{ parameters.name }}` into the Argo CD
+          app-of-apps repository.
+
+          - Argo CD Application: `apps/${{ parameters.name }}.yaml`
+          - Source repository: `${{ parameters.repoUrl }}`
+          - Kubernetes path: `k8s`
+          - Destination namespace: `${{ parameters.namespace }}`
+          - Argo CD project: `${{ parameters.argocdProject }}`
+
+          Generated by the Backstage template `nextjs-argocd-template`.
+        sourcePath: ./gitops
+        update: true
+        gitAuthorName: backstage-scaffolder
+        gitAuthorEmail: scaffolder@example.com
+
+  # ---------------------------------------------------------------------------
+  # 3. Links shown when the scaffolder task finishes
+  # ---------------------------------------------------------------------------
+  output:
+    links:
+      - title: Repository
+        url: ${{ steps['publish'].output.remoteUrl }}
+      - title: CI/CD Pipeline (GitHub Actions)
+        url: ${{ steps['publish'].output.remoteUrl }}/actions
+      - title: Argo CD Onboarding Pull Request
+        url: ${{ steps['gitops-pr'].output.remoteUrl }}
+      - title: Open in Catalog
+        icon: catalog
+        entityRef: ${{ steps['register'].output.entityRef }}

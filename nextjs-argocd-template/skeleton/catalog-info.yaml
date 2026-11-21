@@ -1,0 +1,31 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ${{ values.componentId }}
+  description: ${{ values.description }}
+  tags:
+    - nextjs
+    - typescript
+    - docker
+    - kubernetes
+    - argocd
+    - gitops
+  annotations:
+    github.com/project-slug: ${{ values.destination.owner }}/${{ values.destination.repo }}
+    backstage.io/techdocs-ref: dir:.
+    backstage.io/kubernetes-id: ${{ values.componentId }}
+    backstage.io/kubernetes-namespace: ${{ values.namespace }}
+    argocd/app-name: ${{ values.componentId }}
+    argocd/app-namespace: ${{ values.argocdNamespace }}
+    argocd/project-name: ${{ values.argocdProject }}
+  links:
+    - title: CI/CD Pipeline
+      url: https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ values.destination.repo }}/actions
+    - title: Kubernetes Manifests
+      url: https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ values.destination.repo }}/tree/${{ values.targetRevision }}/k8s
+    - title: Argo CD Application Manifest
+      url: https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ values.destination.repo }}/blob/${{ values.targetRevision }}/argocd/application.yaml
+spec:
+  type: service
+  lifecycle: experimental
+  owner: ${{ values.owner }}
