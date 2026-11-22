@@ -87,6 +87,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install Dependencies for Snyk
+        continue-on-error: true
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No package-lock.json found yet - generating one for Snyk"
+            npm install --no-audit --no-fund
+          fi
+
       # -- Snyk (open-source dependencies) -----------------------------------
       - name: Snyk Open Source Scan
         if: env.SNYK_TOKEN != ''
@@ -108,7 +131,7 @@ jobs:
           path: '.'
           format: 'HTML'
           out: 'reports/dependency-check'
-          args: '--enableRetired'
+          args: '--enableRetired --exclude node_modules/** --exclude .git/** --exclude reports/**'
 
       # -- Trivy (filesystem: dependencies, IaC and secrets) -----------------
       - name: Trivy Filesystem Scan

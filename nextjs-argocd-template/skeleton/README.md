@@ -136,9 +136,42 @@ https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ value
 | `notify` | always | sends a Slack message with the result of every job (skipped when `SLACK_WEBHOOK_URL` is not set) |
 
 All security scanners are **report-only** (`continue-on-error` / `soft_fail`),
-so a missing token or a finding does not break the first pipeline run. Tighten
-this once the baselines are clean by removing `continue-on-error` and setting
-`exit-code: '1'` (Trivy) / `soft_fail: false` (Checkov).
+so a missing token or a finding does not break the first pipeline run.
+
+### Making scans blocking
+
+To enforce findings, edit `.github/workflows/ci-cd.yaml`:
+
+| Scanner | Change |
+| ------- | ------ |
+| Snyk | remove `continue-on-error: true`; keep `--severity-threshold=high` |
+| GitGuardian | remove `continue-on-error: true` |
+| OWASP Dependency-Check | remove `continue-on-error: true`; add `--failOnCVSS 7` to `args` |
+| Trivy (filesystem + image) | remove `continue-on-error: true`; set `exit-code: '1'` |
+| Checkov | remove `continue-on-error: true`; set `soft_fail: false` |
+
+Example for Trivy:
+
+```yaml
+        with:
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '1'
+```
+
+Snyk and GitGuardian steps are skipped when their tokens are missing. If they
+must fail instead of skip, add a preflight step:
+
+```yaml
+      - name: Require scanner credentials
+        run: |
+          test -n "$SNYK_TOKEN" || { echo "SNYK_TOKEN is missing"; exit 1; }
+          test -n "$GITGUARDIAN_API_KEY" || { echo "GITGUARDIAN_API_KEY is missing"; exit 1; }
+```
+
+Because `docker-build-push` needs `security-scan`, a blocking finding prevents
+the image push and GitOps commit. Remove `security-scan` from `needs` if you
+want deploys to proceed regardless of scan results.
 
 ### Required and optional secrets
 
@@ -149,6 +182,11 @@ this once the baselines are clean by removing `continue-on-error` and setting
 | `NVD_API_KEY` | Optional (recommended) | Speeds up the OWASP Dependency-Check NVD download. |
 | `GITGUARDIAN_API_KEY` | Optional | Enables the GitGuardian secret scan. Without it the step is skipped. |
 | `SLACK_WEBHOOK_URL` | Optional | Slack incoming webhook for notifications. Without it the notify job is a no-op. |
+
+Create the GitGuardian API token with the **`scan`** scope. That is the only
+scope required by the `ggshield-action` used here. Add `incidents:read` if you
+use `--with-incident-details`, or `scan:create-incidents` if you configure a
+source UUID so scans create incidents in the GitGuardian dashboard.
 
 Create optional secrets under **Settings → Secrets and variables → Actions →
 New repository secret**.
