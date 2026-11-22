@@ -1,0 +1,48 @@
+# Root Application implementing the Argo CD "app of apps" pattern.
+#
+# Apply this once to the cluster that runs Argo CD:
+#
+#   kubectl apply -f bootstrap/app-of-apps.yaml
+#
+# It watches the `apps/` directory of the gitops-infra repository. Every
+# Application manifest placed there (for example by the Backstage
+# `nextjs-argocd-template`) is created and kept in sync automatically.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-of-apps
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: app-of-apps
+    app.kubernetes.io/part-of: gitops-infra
+    app.kubernetes.io/managed-by: argocd
+  # Argo CD's documented cascade-deletion finalizer. Kubernetes 1.31+ emits a
+  # cosmetic warning because the value is not domain-qualified; do not rename
+  # it, Argo CD expects this exact string.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/wahid007/gitops-infra.git
+    targetRevision: main
+    path: apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
