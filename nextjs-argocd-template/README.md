@@ -8,6 +8,10 @@ TypeScript) service with:
   restrictive `NetworkPolicy`.
 - **Hardened CI/CD pipeline** – lint, type-check, unit tests, build, Snyk,
   OWASP Dependency-Check, Trivy, Checkov, GitGuardian and Slack notifications.
+- **Secrets wired up for you** – the optional scanner/Slack credentials entered
+  in the wizard (`SLACK_WEBHOOK_URL`, `SNYK_TOKEN`, `NVD_API_KEY`,
+  `GITGUARDIAN_API_KEY`) are stored as GitHub Actions secrets of the new
+  repository, so the first pipeline run is fully configured.
 - **Automated GitOps** – the generated repository is registered with the Argo CD
   app-of-apps repository (`gitops-infra`) through an automatically opened pull
   request, and the pipeline commits the immutable image SHA into the Kubernetes
@@ -130,6 +134,10 @@ If you prefer a public image instead, make the GHCR package public
 | `replicas` | `1` | Deployment replica count (1–10) |
 | `imagePullSecret` | `ghcr-pull` | Name of the `docker-registry` secret in `namespace` used to pull the private GHCR image. Required unless the package is made public |
 | `repoUrl` | – | GitHub repository to create (RepoUrlPicker) |
+| `slackWebhookUrl` | – | Slack incoming webhook, written to the repository as `SLACK_WEBHOOK_URL` (`ui:field: Secret`) |
+| `snykToken` | – | Snyk API token, written as `SNYK_TOKEN` (`ui:field: Secret`) |
+| `nvdApiKey` | – | NVD API key for Dependency-Check, written as `NVD_API_KEY` (`ui:field: Secret`) |
+| `gitguardianApiKey` | – | GitGuardian token (`scan` scope), written as `GITGUARDIAN_API_KEY` (`ui:field: Secret`) |
 | `gitopsRepoUrl` | `github.com?repo=gitops-infra&owner=wahid007` | Existing app-of-apps repository (RepoUrlPicker format) |
 | `gitopsRepoBranch` | `main` | Branch of `gitops-infra` that Argo CD watches |
 | `argocdNamespace` | `argocd` | Namespace of the Argo CD `Application` resources |
@@ -140,7 +148,10 @@ If you prefer a public image instead, make the GHCR package public
 
 1. `fetch:template` renders the Next.js skeleton (`./skeleton`) with all
    parameters.
-2. `publish:github` creates the repository and pushes the skeleton.
+2. `publish:github` creates the repository, stores the optional pipeline
+   credentials as **GitHub Actions secrets** (`SLACK_WEBHOOK_URL`,
+   `SNYK_TOKEN`, `NVD_API_KEY`, `GITGUARDIAN_API_KEY`, before the first push so
+   the initial workflow run can already use them) and pushes the skeleton.
 3. `fetch:template` renders the app-of-apps fragment (`./gitops-skeleton`) to
    `./gitops/apps/<component>.yaml` (after publish, so it is not committed to
    the application repository).
@@ -380,6 +391,20 @@ job level.
 | `GITGUARDIAN_API_KEY` | optional | GitGuardian secret scan |
 | `SLACK_WEBHOOK_URL` | optional | Slack progress notifications (incoming webhook, no bot token) |
 
+All four optional secrets can be provided **during scaffolding**: fill in the
+*CI/CD Pipeline Secrets* step of the template wizard and the values are stored as
+repository Actions secrets by the `publish:github` step. Secrets are masked in
+the wizard and in the task logs, are never rendered into the workspace, and are
+not part of the generated Git history.
+
+Fields left empty are still created as empty secrets, which the pipeline treats
+as "not configured": the Snyk and GitGuardian steps are skipped, OWASP
+Dependency-Check runs without an NVD key and the Slack notifier exits quietly.
+
+To add or rotate a value later, use **Settings → Secrets and variables →
+Actions → New repository secret** in the generated repository (the template adds
+a shortcut link to that page once the task finishes).
+
 The Kubernetes pull secret described in
 [Image pull secret (required)](#image-pull-secret-required) is **not** a GitHub
 Actions secret: it lives in the cluster, in the application namespace.
@@ -406,7 +431,10 @@ The token must be able to:
 - create the generated repository,
 - push to it (including `.github/workflows/`, which requires the `workflow`
   scope on a classic PAT or *Workflows: write* on a fine-grained token),
-- create/update pull requests in `gitops-infra` (and read its contents).
+- create/update pull requests in `gitops-infra` (and read its contents),
+- create/update **repository Actions secrets** in the new repository, which is
+  what `publish:github` does with the `secrets` input (fine-grained tokens need
+  *Secrets: write* / *Actions secrets: write* on the target repository).
 
 ## Register the template in Backstage
 

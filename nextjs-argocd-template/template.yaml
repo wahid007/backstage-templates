@@ -6,9 +6,10 @@ metadata:
   description: >-
     Creates a Next.js (TypeScript) service with a hardened CI/CD pipeline
     (lint, tests, Snyk, OWASP Dependency-Check, Trivy, Checkov, GitGuardian and
-    Slack notifications), Kubernetes Deployment/Service manifests and an
-    automated Argo CD GitOps onboarding pull request against the app-of-apps
-    repository.
+    Slack notifications) with the scanner/Slack credentials stored as GitHub
+    Actions secrets of the generated repository, Kubernetes Deployment/Service
+    manifests and an automated Argo CD GitOps onboarding pull request against
+    the app-of-apps repository.
   tags:
     - nextjs
     - typescript
@@ -96,6 +97,44 @@ spec:
             allowedHosts:
               - github.com
 
+    - title: CI/CD Pipeline Secrets (optional)
+      description: >-
+        Optional credentials for the security scans and the Slack notifier. The
+        values are stored as GitHub Actions secrets in the generated repository
+        (Settings -> Secrets and variables -> Actions) and are never written to
+        the workspace or committed to Git. Leave a field empty to disable that
+        integration - the pipeline skips the step instead of failing.
+      properties:
+        slackWebhookUrl:
+          title: Slack Webhook URL
+          type: string
+          description: >-
+            Slack incoming webhook URL used for the pipeline progress
+            notifications (stored as SLACK_WEBHOOK_URL).
+          ui:field: Secret
+        snykToken:
+          title: Snyk Token
+          type: string
+          description: >-
+            Snyk API token used by the Snyk Open Source scan (stored as
+            SNYK_TOKEN). Create it under Snyk -> Account settings -> API token.
+          ui:field: Secret
+        nvdApiKey:
+          title: NVD API Key
+          type: string
+          description: >-
+            NVD API key used by OWASP Dependency-Check to avoid rate limiting
+            (stored as NVD_API_KEY). Request one at
+            https://nvd.nist.gov/developers/request-an-api-key.
+          ui:field: Secret
+        gitguardianApiKey:
+          title: GitGuardian API Key
+          type: string
+          description: >-
+            GitGuardian API token with the `scan` scope used by the secret scan
+            (stored as GITGUARDIAN_API_KEY).
+          ui:field: Secret
+
     - title: Argo CD / GitOps
       required:
         - gitopsRepoUrl
@@ -164,6 +203,14 @@ spec:
         description: ${{ parameters.description }}
         repoVisibility: private
         defaultBranch: main
+        # Values come from the `ui:field: Secret` inputs above (masked in the
+        # form/parameters). Empty values are still created as empty secrets, so
+        # the workflow's `!= ''` guards skip the matching step at runtime.
+        secrets:
+          SLACK_WEBHOOK_URL: ${{ secrets.slackWebhookUrl }}
+          SNYK_TOKEN: ${{ secrets.snykToken }}
+          NVD_API_KEY: ${{ secrets.nvdApiKey }}
+          GITGUARDIAN_API_KEY: ${{ secrets.gitguardianApiKey }}
 
     # Step C: Render the Argo CD Application fragment for the app-of-apps repo
     # (after publish, so the fragment is not committed to the app repository)
@@ -228,6 +275,8 @@ spec:
         url: ${{ steps['publish'].output.remoteUrl }}
       - title: CI/CD Pipeline (GitHub Actions)
         url: ${{ steps['publish'].output.remoteUrl }}/actions
+      - title: Repository Secrets (SLACK_WEBHOOK_URL, SNYK_TOKEN, NVD_API_KEY, GITGUARDIAN_API_KEY)
+        url: ${{ steps['publish'].output.remoteUrl }}/settings/secrets/actions
       - title: Argo CD Onboarding Pull Request
         url: ${{ steps['gitops-pr'].output.remoteUrl }}
       - title: Open in Catalog

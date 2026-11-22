@@ -254,6 +254,13 @@ want deploys to proceed regardless of scan results.
 | `GITGUARDIAN_API_KEY` | Optional | Enables the GitGuardian secret scan. Without it the step is skipped. |
 | `SLACK_WEBHOOK_URL` | Optional | Slack incoming webhook for the progress notifications. Without it every Slack step is a no-op. |
 
+The four optional secrets are created automatically when the app is scaffolded:
+values entered in the Backstage *CI/CD Pipeline Secrets* step are written to
+this repository's Actions secrets by the scaffolder (never committed to Git).
+Empty fields become empty secrets, and the pipeline treats an empty value as
+"not configured". Rotate or add them later under **Settings → Secrets and
+variables → Actions → New repository secret**.
+
 > The cluster pull secret for the private GHCR image is **not** a GitHub Actions
 > secret — see [Private GHCR image — pull secret required](#private-ghcr-image--pull-secret-required).
 
@@ -262,8 +269,8 @@ scope required by the `ggshield-action` used here. Add `incidents:read` if you
 use `--with-incident-details`, or `scan:create-incidents` if you configure a
 source UUID so scans create incidents in the GitGuardian dashboard.
 
-Create optional secrets under **Settings → Secrets and variables → Actions →
-New repository secret**.
+Secrets that were not set during scaffolding can be added at any time under
+**Settings → Secrets and variables → Actions → New repository secret**.
 
 Also verify **Settings → Actions → General → Workflow permissions** allows
 *Read and write permissions* (the workflow declares the permissions it needs,
