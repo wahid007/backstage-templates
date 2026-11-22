@@ -22,3 +22,5 @@ spec:
     - ./nextjs-template/template.yaml
     - ./fastapi-template/template.yaml
     - ./java-spring-boot-template/template.yaml
+    - ./nextjs-argocd-template/catalog-info.yaml
+
