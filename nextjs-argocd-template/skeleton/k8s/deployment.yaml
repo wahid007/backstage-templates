@@ -41,6 +41,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
 {% if values.imagePullSecret %}
+      # GHCR packages are private: this secret must exist in the namespace
+      # below, otherwise the pod stays in ImagePullBackOff.
       imagePullSecrets:
         - name: ${{ values.imagePullSecret }}
 {% endif %}

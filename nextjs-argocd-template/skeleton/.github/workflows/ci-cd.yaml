@@ -20,6 +20,24 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # 0) Slack: announce the pipeline and its three stages (queued)
+  # ---------------------------------------------------------------------------
+  announce:
+    name: Announce Pipeline Start
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Notify Slack · Pipeline Started
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: bash .github/scripts/slack-notify.sh start
+
+  # ---------------------------------------------------------------------------
   # 1) Lint, type-check, unit tests and production build
   # ---------------------------------------------------------------------------
   lint-test:
@@ -31,6 +49,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Start Stage Timer
+        run: echo "STAGE_START=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -66,6 +87,14 @@ jobs:
       - name: Run Build
         run: npm run build
 
+      - name: Notify Slack · Lint, Test and Build
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STAGE_ID: lint-test
+          STAGE_STATUS: ${{ job.status }}
+        run: bash .github/scripts/slack-notify.sh stage
+
   # ---------------------------------------------------------------------------
   # 2) Security scans (report-only: findings never block the pipeline)
   # ---------------------------------------------------------------------------
@@ -86,6 +115,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Start Stage Timer
+        run: echo "STAGE_START=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -135,7 +167,7 @@ jobs:
 
       # -- Trivy (filesystem: dependencies, IaC and secrets) -----------------
       - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: 'fs'
@@ -195,6 +227,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Notify Slack · Security Scans
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STAGE_LINT_TEST: ${{ needs.lint-test.result }}
+          STAGE_ID: security-scan
+          STAGE_STATUS: ${{ job.status }}
+        run: bash .github/scripts/slack-notify.sh stage
+
   # ---------------------------------------------------------------------------
   # 3) Build/push the image, scan it, then commit the immutable tag so Argo CD
   #    can reconcile the cluster (GitOps).
@@ -211,6 +252,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Start Stage Timer
+        run: echo "STAGE_START=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Prepare Image Name
         # GHCR requires a lowercase repository name
@@ -238,7 +282,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trivy Image Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         env:
           TRIVY_USERNAME: ${{ github.actor }}
@@ -267,26 +311,37 @@ jobs:
           git commit -m "chore(gitops): deploy ${GITHUB_SHA:0:7} [skip ci]"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
+      - name: Notify Slack · Build, Push and GitOps
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STAGE_LINT_TEST: ${{ needs.lint-test.result }}
+          STAGE_SECURITY_SCAN: ${{ needs.security-scan.result }}
+          STAGE_ID: docker-build-push
+          STAGE_STATUS: ${{ job.status }}
+        run: bash .github/scripts/slack-notify.sh stage
+
   # ---------------------------------------------------------------------------
-  # 4) Slack notification (always runs, skipped when the webhook is not set)
+  # 4) Slack summary (always runs; a no-op when the webhook is not set)
   # ---------------------------------------------------------------------------
   notify:
-    name: Slack Notification
+    name: Slack Pipeline Summary
     needs: [ lint-test, security-scan, docker-build-push ]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      STAGE_LINT_TEST: ${{ needs.lint-test.result }}
+      STAGE_SECURITY_SCAN: ${{ needs.security-scan.result }}
+      STAGE_DOCKER_BUILD_PUSH: ${{ needs.docker-build-push.result }}
 
     steps:
-      - name: Send Slack Notification
-        if: env.SLACK_WEBHOOK_URL != ''
-        uses: slackapi/slack-github-action@v2.1.0
-        with:
-          webhook: ${{ env.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-            {
-              "text": "*${{ github.repository }}* — `${{ github.ref_name }}`\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>\n*Lint / Test / Build:* ${{ needs.lint-test.result }}\n*Security Scans:* ${{ needs.security-scan.result }}\n*Docker + GitOps:* ${{ needs.docker-build-push.result }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>"
-            }
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Notify Slack · Pipeline Summary
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: bash .github/scripts/slack-notify.sh summary
 {% endraw %}

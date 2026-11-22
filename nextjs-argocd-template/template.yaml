@@ -74,12 +74,15 @@ spec:
           minimum: 1
           maximum: 10
         imagePullSecret:
-          title: Image Pull Secret (optional)
+          title: Image Pull Secret
           type: string
           description: >-
-            Existing docker-registry secret in the target namespace used to pull
-            the private GHCR image. Leave empty when the package is public.
-          default: ''
+            Name of the docker-registry secret in the Kubernetes namespace that
+            is used to pull the private GHCR image. GHCR packages are private by
+            default, so this secret must be created in the cluster before Argo CD
+            syncs the app (see the scaffolded README). Leave empty only when the
+            package is public.
+          default: ghcr-pull
 
     - title: Choose Repository Location
       required:

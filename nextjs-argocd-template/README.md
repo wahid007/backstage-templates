@@ -13,6 +13,12 @@ TypeScript) service with:
   request, and the pipeline commits the immutable image SHA into the Kubernetes
   manifest after every successful build.
 
+> **Deployment prerequisite** – the image is pushed to GitHub Container Registry
+> and GHCR packages are **private** by default. A `docker-registry` pull secret
+> must exist in the target namespace (and the Deployment must reference it)
+> before Argo CD syncs, otherwise the pod stays in `ImagePullBackOff`. See
+> [Image pull secret (required)](#image-pull-secret-required).
+
 ## Repository layout
 
 ```text
@@ -28,6 +34,7 @@ nextjs-argocd-template/
 │       └── ${{ values.componentId }}.yaml   # rendered into the app-of-apps PR
 └── skeleton/
     ├── .github/workflows/ci-cd.yaml # CI/CD + security + GitOps pipeline
+    ├── .github/scripts/slack-notify.sh # Slack progress notifier
     ├── app/                         # Next.js App Router + /api/health
     ├── lib/                         # testable helpers
     ├── k8s/
@@ -43,6 +50,75 @@ nextjs-argocd-template/
     └── README.md
 ```
 
+## Image pull secret (required)
+
+GHCR packages are **private** by default, so a Kubernetes pull secret is
+mandatory. Without it the Deployment is created but the pod never starts:
+
+```text
+Failed to pull image "ghcr.io/<owner>/<repo>:<sha>": ...
+  unauthorized: authentication required
+→ ErrImagePull / ImagePullBackOff
+```
+
+GitHub does not expose an anonymous pull for private packages, so neither the
+cluster nor a `docker pull` without `docker login` will work until the secret
+exists.
+
+### 1. Create the secret in the target namespace
+
+Use a GitHub token with package read access: a classic PAT with `read:packages`,
+a fine-grained PAT with **Packages: read**, or `gh auth token` from an account
+that can read the package.
+
+```bash
+kubectl create namespace <namespace> --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io \
+  --docker-username=<github-user> \
+  --docker-password=<PAT-with-read:packages> \
+  --namespace <namespace>
+```
+
+The secret is namespaced: create it in **every** namespace the app is deployed
+to (and re-create it after the token expires — a rotated token does not update
+an existing secret automatically).
+
+### 2. Reference it from the Deployment
+
+The template writes `imagePullSecrets: [{ name: <imagePullSecret> }]` into
+`skeleton/k8s/deployment.yaml`. The parameter defaults to `ghcr-pull`, so the
+command above is enough for a fresh scaffold. To use a different name, set the
+`Image Pull Secret` field when running the template, or edit
+`k8s/deployment.yaml` and re-sync the Argo CD Application.
+
+```yaml
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+```
+
+A secret committed to Git is **not** a substitute: credentials must never be
+stored in the repository. Alternatives are an ExternalSecrets/SealedSecrets
+operator, a `ServiceAccount` with `imagePullSecrets` referenced by the pod, or
+Argo CD's image-pull-secret replication if your setup provides it.
+
+### 3. Keep it in sync with Argo CD
+
+Argo CD applies the `k8s/` directory, but it does not create this secret. If the
+`Application` uses `CreateNamespace=true`, create the namespace and the secret
+**before** the first sync. Without the secret the `Application` is reported as
+`Degraded`/`Progressing` and the pod stays in `ImagePullBackOff`; the kubelet
+retries on its own as soon as the secret is added, or force a new rollout with
+`kubectl rollout restart deployment/<name> -n <namespace>`.
+
+If you prefer a public image instead, make the GHCR package public
+(**Repository → Packages → package settings → Change visibility**) and remove
+`imagePullSecrets` from the manifest.
+
 ## Parameters
 
 | Parameter | Default | Description |
@@ -52,7 +128,7 @@ nextjs-argocd-template/
 | `description` | Next.js application… | Component description |
 | `namespace` | `default` | Kubernetes namespace for the Deployment/Service |
 | `replicas` | `1` | Deployment replica count (1–10) |
-| `imagePullSecret` | – | Optional docker-registry secret in the target namespace for the private GHCR image |
+| `imagePullSecret` | `ghcr-pull` | Name of the `docker-registry` secret in `namespace` used to pull the private GHCR image. Required unless the package is made public |
 | `repoUrl` | – | GitHub repository to create (RepoUrlPicker) |
 | `gitopsRepoUrl` | `github.com?repo=gitops-infra&owner=wahid007` | Existing app-of-apps repository (RepoUrlPicker format) |
 | `gitopsRepoBranch` | `main` | Branch of `gitops-infra` that Argo CD watches |
@@ -133,10 +209,40 @@ PAT) under **Settings → Repositories**. Without this, the `Application` stays 
 
 | Job | Trigger | Steps |
 | --- | ------- | ----- |
-| `lint-test` | push/PR to `main` | Node 24 + npm cache → install (lockfile-tolerant) → `npm run lint` → `npm run typecheck` → `npm test` → `npm run build` |
-| `security-scan` | after `lint-test` | Snyk (deps), OWASP Dependency-Check (HTML artifact), Trivy fs (SARIF), Checkov (k8s + Dockerfile, SARIF), GitGuardian (secrets); SARIF uploaded to the Security tab |
-| `docker-build-push` | push to `main` only | GHCR login → build/push `latest` + `<sha>` → Trivy image scan → `sed` the SHA tag into `k8s/deployment.yaml` → commit `chore(gitops): deploy <sha> [skip ci]` |
-| `notify` | always | Slack notification with each job result (no-op without `SLACK_WEBHOOK_URL`) |
+| `announce` | always (runs immediately) | posts the pipeline start to Slack with all three stages queued |
+| `lint-test` | push/PR to `main` | Node 24 + npm cache → install (lockfile-tolerant) → `npm run lint` → `npm run typecheck` → `npm test` → `npm run build` → Slack progress update |
+| `security-scan` | after `lint-test` | Snyk (deps), OWASP Dependency-Check (HTML artifact), Trivy fs (SARIF), Checkov (k8s + Dockerfile, SARIF), GitGuardian (secrets); SARIF uploaded to the Security tab → Slack progress update |
+| `docker-build-push` | push to `main` only | GHCR login → build/push `latest` + `<sha>` → Trivy image scan → `sed` the SHA tag into `k8s/deployment.yaml` → commit `chore(gitops): deploy <sha> [skip ci]` → Slack progress update |
+| `notify` | always | final Slack summary with the overall result (all Slack steps are no-ops without `SLACK_WEBHOOK_URL`) |
+
+### Slack progress notifications
+
+`.github/scripts/slack-notify.sh` posts a live progress checklist to the
+incoming webhook: one message at start, one after each stage, and a final
+summary. Emojis encode the state of every stage, so the run can be followed from
+the channel without opening GitHub:
+
+| Emoji | Meaning |
+| ----- | ------- |
+| 🧪 | lint, type-check, tests and build stage |
+| 🛡️ | security scans stage |
+| 🐳 | image build/push + GitOps manifest commit stage |
+| ⏳ | queued |
+| ✅ | passed |
+| ❌ | failed |
+| ⚠️ | cancelled |
+| ⏭️ | skipped (e.g. the deploy stage on a pull request) |
+| ⌛ | timed out |
+
+Start, stage and summary messages share the same layout: header, repository /
+branch / commit context, the stage checklist with the per-stage duration, and
+buttons to the workflow run, the commit and the repository. The final message
+switches its header to 🎉 *Pipeline succeeded*, 🚨 *Pipeline failed* or
+⏹️ *Pipeline cancelled*.
+
+Only `SLACK_WEBHOOK_URL` is required — notifications use a plain incoming
+webhook (no bot token, no `chat.update`). Because webhooks cannot edit a posted
+message, progress is published as a sequence of messages in the channel.
 
 ### Report-only vs blocking
 
@@ -202,7 +308,7 @@ Filesystem scan:
 
 ```yaml
       - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         # remove: continue-on-error: true
         with:
           severity: 'CRITICAL,HIGH'
@@ -214,7 +320,7 @@ Image scan:
 
 ```yaml
       - name: Trivy Image Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         # remove: continue-on-error: true
         with:
           severity: 'CRITICAL,HIGH'
@@ -272,7 +378,11 @@ job level.
 | `SNYK_TOKEN` | optional | Snyk scan |
 | `NVD_API_KEY` | optional (recommended) | OWASP Dependency-Check NVD updates |
 | `GITGUARDIAN_API_KEY` | optional | GitGuardian secret scan |
-| `SLACK_WEBHOOK_URL` | optional | Slack notifications |
+| `SLACK_WEBHOOK_URL` | optional | Slack progress notifications (incoming webhook, no bot token) |
+
+The Kubernetes pull secret described in
+[Image pull secret (required)](#image-pull-secret-required) is **not** a GitHub
+Actions secret: it lives in the cluster, in the application namespace.
 
 For `GITGUARDIAN_API_KEY`, create a GitGuardian API token with the **`scan`**
 scope. That is the only scope required by the `ggshield-action` used in this
@@ -321,6 +431,10 @@ The skeleton files are rendered with Backstage's Nunjucks engine. GitHub Actions
 expressions use the same `${{ ... }}` shape, so `skeleton/.github/workflows/ci-cd.yaml`
 is wrapped in `{% raw %}…{% endraw %}`. Keep those markers when editing the
 workflow inside `skeleton/`.
+
+`skeleton/.github/scripts/slack-notify.sh` only uses shell `${VAR}` expansion
+(no Nunjucks expressions), so it needs no raw block. It relies on `jq` and
+`curl`, both preinstalled on `ubuntu-latest`.
 
 ## Local validation
 
