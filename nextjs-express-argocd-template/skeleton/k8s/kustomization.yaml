@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Argo CD applies this directory (path: k8s) from the application repository.
+# Each microservice owns its manifests in a subdirectory.
+resources:
+  - frontend
+  - backend

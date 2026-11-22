@@ -1,0 +1,42 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${{ values.componentId }}-backend
+  namespace: ${{ values.namespace }}
+  labels:
+    app: ${{ values.componentId }}-backend
+    app.kubernetes.io/name: ${{ values.componentId }}-backend
+    app.kubernetes.io/instance: ${{ values.componentId }}
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: ${{ values.componentId }}
+    app.kubernetes.io/managed-by: argocd
+    backstage.io/kubernetes-id: ${{ values.componentId }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ${{ values.componentId }}-backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the frontend pods may call the API (plus in-cluster health checks
+    # from the kubelet, which are node-local and not subject to this policy).
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ${{ values.componentId }}-frontend
+      ports:
+        - protocol: TCP
+          port: 3001
+  egress:
+    # DNS resolution.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS egress for external APIs and managed databases. Add the specific
+    # database port (for example 5432 for PostgreSQL) when one is introduced.
+    - ports:
+        - protocol: TCP
+          port: 443

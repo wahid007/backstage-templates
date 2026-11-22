@@ -1,0 +1,23 @@
+# Location entity that registers the Next.js + Express + Argo CD GitOps
+# template.
+#
+# Add this file (or template.yaml directly) as a Location in Backstage, or add
+# ./nextjs-express-argocd-template/template.yaml to the root catalog-info.yaml
+# targets.
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: nextjs-express-argocd-template
+  title: Next.js + Express Microservices + Argo CD GitOps Template
+  description: Next.js frontend and Express API microservices with separate Dockerfiles/manifests, CI/CD security scans and Argo CD app-of-apps onboarding
+  tags:
+    - templates
+    - nextjs
+    - express
+    - nodejs
+    - microservices
+    - argocd
+    - gitops
+spec:
+  targets:
+    - ./template.yaml

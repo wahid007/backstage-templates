@@ -1,0 +1,292 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: nextjs-express-argocd-template
+  title: Next.js + Express Microservices with CI/CD, Security Scans and Argo CD GitOps
+  description: >-
+    Creates a Next.js (TypeScript) frontend microservice and an Express API
+    backend microservice, each with its own Dockerfile and Kubernetes
+    Deployment/Service/NetworkPolicy manifests, a hardened CI/CD pipeline
+    (lint, tests, Snyk, OWASP Dependency-Check, Trivy, Checkov, GitGuardian and
+    Slack notifications) with the scanner/Slack credentials stored as GitHub
+    Actions secrets of the generated repository, and an automated Argo CD
+    GitOps onboarding pull request against the app-of-apps repository.
+  tags:
+    - nextjs
+    - express
+    - nodejs
+    - typescript
+    - api
+    - microservices
+    - ci-cd
+    - docker
+    - kubernetes
+    - argocd
+    - gitops
+    - security
+spec:
+  owner: developers
+  type: service
+
+  # ---------------------------------------------------------------------------
+  # 1. Inputs collected from the user in the Backstage UI
+  # ---------------------------------------------------------------------------
+  parameters:
+    - title: Provide Component Information
+      required:
+        - name
+        - owner
+      properties:
+        name:
+          title: Name
+          type: string
+          description: >-
+            Unique lowercase DNS name of the Next.js service (e.g.,
+            my-nextjs-app). Used for the Kubernetes resources and the Argo CD
+            Application.
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          maxLength: 59
+          ui:autofocus: true
+          ui:field: EntityNamePicker
+        owner:
+          title: Owner
+          type: string
+          description: Owner of the component (e.g., group:developers)
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        description:
+          title: Description
+          type: string
+          description: Short description of the service
+          default: Next.js + Express application created via Backstage with Argo CD GitOps
+
+    - title: Kubernetes Settings
+      required:
+        - namespace
+        - replicas
+      properties:
+        namespace:
+          title: Kubernetes Namespace
+          type: string
+          description: Namespace both microservices (frontend and backend) are deployed into
+          default: default
+        replicas:
+          title: Replicas
+          type: integer
+          description: Number of pod replicas managed by each microservice Deployment
+          default: 1
+          minimum: 1
+          maximum: 10
+        imagePullSecret:
+          title: Image Pull Secret
+          type: string
+          description: >-
+            Name of the docker-registry secret in the Kubernetes namespace that
+            is used to pull the private GHCR image. GHCR packages are private by
+            default, so this secret must be created in the cluster before Argo CD
+            syncs the app (see the scaffolded README). Leave empty only when the
+            package is public.
+          default: ghcr-pull
+
+    - title: Choose Repository Location
+      required:
+        - repoUrl
+      properties:
+        repoUrl:
+          title: Repository Location
+          type: string
+          ui:field: RepoUrlPicker
+          ui:options:
+            allowedHosts:
+              - github.com
+
+    - title: CI/CD Pipeline Secrets (optional)
+      description: >-
+        Optional credentials for the security scans and the Slack notifier. The
+        values are stored as GitHub Actions secrets in the generated repository
+        (Settings -> Secrets and variables -> Actions) and are never written to
+        the workspace or committed to Git. Leave a field empty to disable that
+        integration - the pipeline skips the step instead of failing.
+      properties:
+        slackWebhookUrl:
+          title: Slack Webhook URL
+          type: string
+          description: >-
+            Slack incoming webhook URL used for the pipeline progress
+            notifications (stored as SLACK_WEBHOOK_URL).
+          ui:field: Secret
+        snykToken:
+          title: Snyk Token
+          type: string
+          description: >-
+            Snyk API token used by the Snyk Open Source scan (stored as
+            SNYK_TOKEN). Create it under Snyk -> Account settings -> API token.
+          ui:field: Secret
+        nvdApiKey:
+          title: NVD API Key
+          type: string
+          description: >-
+            NVD API key used by OWASP Dependency-Check to avoid rate limiting
+            (stored as NVD_API_KEY). Request one at
+            https://nvd.nist.gov/developers/request-an-api-key.
+          ui:field: Secret
+        gitguardianApiKey:
+          title: GitGuardian API Key
+          type: string
+          description: >-
+            GitGuardian API token with the `scan` scope used by the secret scan
+            (stored as GITGUARDIAN_API_KEY).
+          ui:field: Secret
+
+    - title: Argo CD / GitOps
+      required:
+        - gitopsRepoUrl
+        - gitopsRepoBranch
+        - argocdNamespace
+        - argocdProject
+        - targetRevision
+      properties:
+        gitopsRepoUrl:
+          title: App-of-Apps Repository
+          type: string
+          description: >-
+            Existing gitops-infra repository that hosts the Argo CD app-of-apps.
+            Use the RepoUrlPicker format, e.g.
+            github.com?repo=gitops-infra&owner=wahid007
+          default: github.com?repo=gitops-infra&owner=wahid007
+        gitopsRepoBranch:
+          title: App-of-Apps Branch
+          type: string
+          description: Branch of the gitops-infra repository that Argo CD watches
+          default: main
+        argocdNamespace:
+          title: Argo CD Namespace
+          type: string
+          description: Namespace where the Argo CD Application resources live
+          default: argocd
+        argocdProject:
+          title: Argo CD Project
+          type: string
+          description: Argo CD AppProject used by the generated Application
+          default: default
+        targetRevision:
+          title: Application Repository Branch
+          type: string
+          description: Branch of the generated repository that Argo CD tracks
+          default: main
+
+  # ---------------------------------------------------------------------------
+  # 2. Execution steps
+  # ---------------------------------------------------------------------------
+  steps:
+    # Step A: Render the Next.js + Express microservices skeleton (Nunjucks)
+    # and copy it to the workspace
+    - id: fetch-base
+      name: Fetch Frontend/Backend Boilerplates, Pipeline and Kubernetes Manifests
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          componentId: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+          namespace: ${{ parameters.namespace }}
+          replicas: ${{ parameters.replicas }}
+          imagePullSecret: ${{ parameters.imagePullSecret }}
+          argocdNamespace: ${{ parameters.argocdNamespace }}
+          argocdProject: ${{ parameters.argocdProject }}
+          targetRevision: ${{ parameters.targetRevision }}
+
+    # Step B: Create the remote GitHub repository and push the app files
+    - id: publish
+      name: Publish Repository to GitHub
+      action: publish:github
+      input:
+        repoUrl: ${{ parameters.repoUrl }}
+        description: ${{ parameters.description }}
+        repoVisibility: private
+        defaultBranch: main
+        # Values come from the `ui:field: Secret` inputs above (masked in the
+        # form/parameters). Empty values are still created as empty secrets, so
+        # the workflow's `!= ''` guards skip the matching step at runtime.
+        secrets:
+          SLACK_WEBHOOK_URL: ${{ secrets.slackWebhookUrl }}
+          SNYK_TOKEN: ${{ secrets.snykToken }}
+          NVD_API_KEY: ${{ secrets.nvdApiKey }}
+          GITGUARDIAN_API_KEY: ${{ secrets.gitguardianApiKey }}
+
+    # Step C: Render the Argo CD Application fragment for the app-of-apps repo
+    # (after publish, so the fragment is not committed to the app repository)
+    - id: fetch-gitops
+      name: Render Argo CD App-of-Apps Manifest
+      action: fetch:template
+      input:
+        url: ./gitops-skeleton
+        targetPath: ./gitops
+        values:
+          componentId: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          destination: ${{ parameters.repoUrl | parseRepoUrl }}
+          namespace: ${{ parameters.namespace }}
+          replicas: ${{ parameters.replicas }}
+          imagePullSecret: ${{ parameters.imagePullSecret }}
+          argocdNamespace: ${{ parameters.argocdNamespace }}
+          argocdProject: ${{ parameters.argocdProject }}
+          targetRevision: ${{ parameters.targetRevision }}
+
+    # Step D: Register the new component in the Backstage catalog
+    - id: register
+      name: Register to Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['publish'].output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+
+    # Step E: Open a pull request that registers the app with the Argo CD
+    # app-of-apps repository (apps/<component>.yaml)
+    - id: gitops-pr
+      name: Open Argo CD App-of-Apps Pull Request
+      action: publish:github:pull-request
+      input:
+        repoUrl: ${{ parameters.gitopsRepoUrl }}
+        branchName: backstage/argocd-${{ parameters.name }}
+        targetBranchName: ${{ parameters.gitopsRepoBranch }}
+        title: 'feat(argocd): onboard ${{ parameters.name }}'
+        description: |
+          Automated onboarding of `${{ parameters.name }}` into the Argo CD
+          app-of-apps repository.
+
+          - Argo CD Application: `apps/${{ parameters.name }}.yaml`
+          - Source repository: `${{ parameters.repoUrl }}`
+          - Frontend (Next.js): `frontend/Dockerfile`, `k8s/frontend/`
+          - Backend (Express): `backend/Dockerfile`, `k8s/backend/`
+          - Kubernetes root path: `k8s` (kustomization includes both services)
+          - Destination namespace: `${{ parameters.namespace }}`
+          - Argo CD project: `${{ parameters.argocdProject }}`
+
+          Generated by the Backstage template `nextjs-express-argocd-template`.
+        sourcePath: ./gitops
+        update: true
+        gitAuthorName: backstage-scaffolder
+        gitAuthorEmail: scaffolder@example.com
+
+  # ---------------------------------------------------------------------------
+  # 3. Links shown when the scaffolder task finishes
+  # ---------------------------------------------------------------------------
+  output:
+    links:
+      - title: Repository
+        url: ${{ steps['publish'].output.remoteUrl }}
+      - title: CI/CD Pipeline (GitHub Actions)
+        url: ${{ steps['publish'].output.remoteUrl }}/actions
+      - title: Repository Secrets (SLACK_WEBHOOK_URL, SNYK_TOKEN, NVD_API_KEY, GITGUARDIAN_API_KEY)
+        url: ${{ steps['publish'].output.remoteUrl }}/settings/secrets/actions
+      - title: Argo CD Onboarding Pull Request
+        url: ${{ steps['gitops-pr'].output.remoteUrl }}
+      - title: Open in Catalog
+        icon: catalog
+        entityRef: ${{ steps['register'].output.entityRef }}

@@ -1,0 +1,43 @@
+# Managed by the Backstage template `nextjs-express-argocd-template`.
+#
+# This Application is discovered by the Argo CD app-of-apps root Application
+# (`bootstrap/app-of-apps.yaml`) because it lives in the `apps/` directory of
+# the gitops-infra repository.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${{ values.componentId }}
+  namespace: ${{ values.argocdNamespace }}
+  labels:
+    app.kubernetes.io/name: ${{ values.componentId }}
+    app.kubernetes.io/component: microservices
+    app.kubernetes.io/part-of: gitops-infra
+    app.kubernetes.io/managed-by: backstage
+  annotations:
+    backstage.io/owner: ${{ values.owner }}
+    backstage.io/source-repository: https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ values.destination.repo }}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: ${{ values.argocdProject }}
+  source:
+    repoURL: https://${{ values.destination.host }}/${{ values.destination.owner }}/${{ values.destination.repo }}.git
+    targetRevision: ${{ values.targetRevision }}
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ${{ values.namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

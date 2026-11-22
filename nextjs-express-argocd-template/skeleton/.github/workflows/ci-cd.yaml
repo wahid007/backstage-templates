@@ -1,0 +1,423 @@
+{% raw %}
+name: CI/CD - Build, Scan and GitOps
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  NODE_VERSION: '24'
+
+# Do not cancel an in-flight main build: it publishes the image and updates
+# the GitOps manifest. Pull-request runs for the same ref are superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0) Slack: announce the pipeline and its three stages (queued)
+  # ---------------------------------------------------------------------------
+  announce:
+    name: Announce Pipeline Start
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Notify Slack · Pipeline Started
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: bash .github/scripts/slack-notify.sh start
+
+  # ---------------------------------------------------------------------------
+  # 1) Lint, type-check, unit tests and production build
+  # ---------------------------------------------------------------------------
+  lint-test:
+    name: Lint, Test and Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Start Stage Timer
+        run: echo "STAGE_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('frontend/package-lock.json', 'backend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install Backend Dependencies
+        working-directory: backend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No backend package-lock.json found yet - falling back to npm install"
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No frontend package-lock.json found yet - falling back to npm install"
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Run Backend Linter
+        working-directory: backend
+        run: npm run lint
+
+      - name: Run Backend Type Check
+        working-directory: backend
+        run: npm run typecheck
+
+      - name: Run Backend Unit Tests
+        working-directory: backend
+        run: npm test
+
+      - name: Build Backend
+        working-directory: backend
+        run: npm run build
+
+      - name: Run Frontend Linter
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run Frontend Type Check
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Run Frontend Unit Tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build Frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Notify Slack · Lint, Test and Build
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STAGE_ID: lint-test
+          STAGE_STATUS: ${{ job.status }}
+        run: bash .github/scripts/slack-notify.sh stage
+
+  # ---------------------------------------------------------------------------
+  # 2) Security scans (report-only: findings never block the pipeline)
+  # ---------------------------------------------------------------------------
+  security-scan:
+    name: Security Scans
+    needs: lint-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+      GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Start Stage Timer
+        run: echo "STAGE_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore npm cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('frontend/package-lock.json', 'backend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install Backend Dependencies for Snyk
+        working-directory: backend
+        continue-on-error: true
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No backend package-lock.json found yet - generating one for Snyk"
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Install Frontend Dependencies for Snyk
+        working-directory: frontend
+        continue-on-error: true
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No frontend package-lock.json found yet - generating one for Snyk"
+            npm install --no-audit --no-fund
+          fi
+
+      # -- Snyk (open-source dependencies) -----------------------------------
+      - name: Snyk Open Source Scan
+        if: env.SNYK_TOKEN != ''
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ env.SNYK_TOKEN }}
+        with:
+          args: --all-projects --severity-threshold=high
+
+      # -- OWASP Dependency-Check (SCA report) -------------------------------
+      - name: OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        continue-on-error: true
+        env:
+          NVD_API_KEY: ${{ env.NVD_API_KEY }}
+        with:
+          project: ${{ github.repository }}
+          path: '.'
+          format: 'HTML'
+          out: 'reports/dependency-check'
+          args: '--enableRetired --exclude "**/node_modules/**" --exclude "**/.next/**" --exclude "**/dist/**" --exclude .git/** --exclude reports/**'
+
+      # -- Trivy (filesystem: dependencies, IaC and secrets) -----------------
+      - name: Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '0'
+
+      # -- Checkov (Kubernetes manifests and Dockerfile) ---------------------
+      - name: Checkov IaC Scan
+        uses: bridgecrewio/checkov-action@master
+        continue-on-error: true
+        with:
+          directory: .
+          framework: kubernetes,dockerfile
+          output_format: sarif
+          output_file_path: checkov.sarif
+          soft_fail: true
+
+      # -- GitGuardian (secret scanning) -------------------------------------
+      - name: GitGuardian Secret Scan
+        if: env.GITGUARDIAN_API_KEY != ''
+        uses: GitGuardian/ggshield-action@v1
+        continue-on-error: true
+        env:
+          GITHUB_PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
+          GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITGUARDIAN_API_KEY: ${{ env.GITGUARDIAN_API_KEY }}
+
+      # -- Publish reports ---------------------------------------------------
+      - name: Upload Trivy Results to the Security Tab
+        if: always() && hashFiles('trivy-fs.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+      - name: Upload Checkov Results to the Security Tab
+        if: always() && hashFiles('checkov.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: checkov.sarif
+          category: checkov
+
+      - name: Upload Dependency-Check Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Notify Slack · Security Scans
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STAGE_LINT_TEST: ${{ needs.lint-test.result }}
+          STAGE_ID: security-scan
+          STAGE_STATUS: ${{ job.status }}
+        run: bash .github/scripts/slack-notify.sh stage
+
+  # ---------------------------------------------------------------------------
+  # 3) Build/push the image, scan it, then commit the immutable tag so Argo CD
+  #    can reconcile the cluster (GitOps).
+  # ---------------------------------------------------------------------------
+  docker-build-push:
+    name: Build, Push and Update GitOps Manifest
+    needs: [ lint-test, security-scan ]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Start Stage Timer
+        run: echo "STAGE_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Prepare Image Names
+        # GHCR requires a lowercase repository name. Both microservices live
+        # under the same repository namespace: <repo>/frontend and <repo>/backend.
+        run: |
+          IMAGE_BASE="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          echo "FRONTEND_IMAGE=${IMAGE_BASE}/frontend" >> "$GITHUB_ENV"
+          echo "BACKEND_IMAGE=${IMAGE_BASE}/backend" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:latest
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Trivy Frontend Image Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Trivy Backend Image Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Update Kubernetes Manifest Image Tags
+        run: |
+          FRONTEND_IMAGE="${FRONTEND_IMAGE}:${GITHUB_SHA}"
+          BACKEND_IMAGE="${BACKEND_IMAGE}:${GITHUB_SHA}"
+
+          sed -i -E "s|^([[:space:]]*image:).*|\1 ${FRONTEND_IMAGE}|" k8s/frontend/deployment.yaml
+          sed -i -E "s|^([[:space:]]*image:).*|\1 ${BACKEND_IMAGE}|" k8s/backend/deployment.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/frontend/deployment.yaml k8s/backend/deployment.yaml
+
+          if git diff --cached --quiet; then
+            echo "Manifests already point at ${GITHUB_SHA} - nothing to commit"
+            exit 0
+          fi
+
+          git commit -m "chore(gitops): deploy ${GITHUB_SHA:0:7} [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Notify Slack · Build, Push and GitOps
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STAGE_LINT_TEST: ${{ needs.lint-test.result }}
+          STAGE_SECURITY_SCAN: ${{ needs.security-scan.result }}
+          STAGE_ID: docker-build-push
+          STAGE_STATUS: ${{ job.status }}
+        run: bash .github/scripts/slack-notify.sh stage
+
+  # ---------------------------------------------------------------------------
+  # 4) Slack summary (always runs; a no-op when the webhook is not set)
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Slack Pipeline Summary
+    needs: [ lint-test, security-scan, docker-build-push ]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      STAGE_LINT_TEST: ${{ needs.lint-test.result }}
+      STAGE_SECURITY_SCAN: ${{ needs.security-scan.result }}
+      STAGE_DOCKER_BUILD_PUSH: ${{ needs.docker-build-push.result }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Notify Slack · Pipeline Summary
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: bash .github/scripts/slack-notify.sh summary
+{% endraw %}

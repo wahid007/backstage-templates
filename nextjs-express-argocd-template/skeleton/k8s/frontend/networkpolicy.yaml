@@ -1,0 +1,44 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${{ values.componentId }}-frontend
+  namespace: ${{ values.namespace }}
+  labels:
+    app: ${{ values.componentId }}-frontend
+    app.kubernetes.io/name: ${{ values.componentId }}-frontend
+    app.kubernetes.io/instance: ${{ values.componentId }}
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: ${{ values.componentId }}
+    app.kubernetes.io/managed-by: argocd
+    backstage.io/kubernetes-id: ${{ values.componentId }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ${{ values.componentId }}-frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow the LoadBalancer/Ingress and in-cluster clients to reach the pod.
+    - ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    # DNS resolution.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The Next.js API proxy forwards /api/* to the Express Service.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ${{ values.componentId }}-backend
+      ports:
+        - protocol: TCP
+          port: 3001
+    # HTTPS egress for external APIs used by server-side code.
+    - ports:
+        - protocol: TCP
+          port: 443
